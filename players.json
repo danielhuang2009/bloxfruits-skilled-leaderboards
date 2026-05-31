@@ -41,5 +41,15 @@
       "1v1s",
       "2v2s"
     ]
+  },
+  {
+    "name": "Robs",
+    "region": "NA",
+    "builds": [
+      "Sword"
+    ],
+    "modes": [
+      "1v1s"
+    ]
   }
 ]
