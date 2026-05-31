@@ -371,7 +371,7 @@
         <div class="fgroup"><span class="label">🎯 Mode</span><div class="chips" id="f-mode"></div></div>
       </div>
       <div class="filter-foot">
-        <span class="filter-count" id="filter-count"><span class="dotc"></span>Select all three filters to view a ranking</span>
+        <span class="filter-count" id="filter-count"><span class="dotc"></span>Pick filters, or leave any on “All” for an aggregated ranking</span>
         <button class="clear-btn" id="clear-filters" type="button">✕ Clear filters</button>
       </div>
     </div>
@@ -525,44 +525,77 @@ function makeChips(id,vals,key){
     c.appendChild(b);
   });
 }
+// Two ranking modes:
+//   • ALL THREE filters specific  → show that exact combo's manually-set board.
+//   • ANY filter on "All"         → aggregate across every matching board.
+// A combo "matches" the selection when, for each dimension, the combo's value
+// equals the chosen value OR that dimension is "All". Aggregation uses a Borda
+// points system: a player at rank r in an N-player board earns (N - r + 1)
+// points (so #1 of an N-board scores N). Points sum across all matching boards,
+// rewarding BOTH placing high AND appearing in many boards. Ties break by: more
+// points → more boards → better (lower) average rank → name.
+const dimLabel=(v,allTxt)=>v==="All"?allTxt:v;
+function scopeLabel(){
+  return `${dimLabel(state.region,"All Regions")} · ${dimLabel(state.build,"All Builds")} · ${dimLabel(state.mode,"All Modes")}`;
+}
+// pills describing the active aggregated scope (an "All" dimension shows a muted "All …" pill)
+function scopePills(){
+  return `${state.region==="All"?'<span class="pill reg">All Regions</span>':regPill(state.region)}`
+        +`${state.build==="All"?'<span class="pill build">🗡 All Builds</span>':buildPill(state.build)}`
+        +`${state.mode==="All"?'<span class="pill mode">All Modes</span>':modePill(state.mode)}`;
+}
+// every populated combo whose region/build/mode matches the current selection
+function matchingCombos(){
+  return COMBOS.filter(c=>c.names.length
+    &&(state.region==="All"||ciEq(c.region,state.region))
+    &&(state.build==="All"||ciEq(c.build,state.build))
+    &&(state.mode==="All"||ciEq(c.mode,state.mode)));
+}
+// collapse matching combos into one aggregated, sorted ranking (see note above)
+function aggregateRanking(combos){
+  const tally={};   // lowerName -> {name, points, boards, rankSum, bestRank}
+  combos.forEach(c=>{
+    const N=c.names.length;
+    c.names.forEach((nm,i)=>{
+      const k=nm.toLowerCase();
+      const t=tally[k]||(tally[k]={name:nm,points:0,boards:0,rankSum:0,bestRank:Infinity});
+      t.points+=(N-i);          // Borda: #1 of an N-player board scores N
+      t.boards+=1;
+      t.rankSum+=(i+1);
+      if(i+1<t.bestRank)t.bestRank=i+1;
+    });
+  });
+  return Object.values(tally).sort((a,b)=>
+    b.points-a.points
+    ||b.boards-a.boards
+    ||(a.rankSum/a.boards)-(b.rankSum/b.boards)
+    ||a.name.localeCompare(b.name));
+}
+
 function render(){
   const complete=state.region!=="All"&&state.build!=="All"&&state.mode!=="All";
   const anySel=state.region!=="All"||state.build!=="All"||state.mode!=="All";
-  // The combo only exists once all three are chosen AND a board is stored for it.
-  const combo=complete?findCombo(state.region,state.build,state.mode):null;
-  const names=combo?combo.names:[];
-  const label=complete?`${state.region} · ${state.build} · ${state.mode}`:null;
 
-  // ---- context chip ----
   const ctxEl=document.getElementById("ctx");
-  if(ctxEl)ctxEl.innerHTML=complete
-    ?`<b>${state.region}</b> · <b>${state.build}</b> · <b>${state.mode}</b>`
-    :"Select a Region, Build &amp; Mode";
-
-  // ---- live counter + clear-filters enabled state (before any early return) ----
   const countEl=document.getElementById("filter-count");
-  if(countEl){
-    countEl.innerHTML=complete
-      ?`<span class="dotc"></span>Showing <b>${names.length}</b> player${names.length===1?"":"s"} in this ranking`
-      :`<span class="dotc"></span>Select all three filters to view a ranking`;
-  }
   const clearBtn=document.getElementById("clear-filters");
-  if(clearBtn)clearBtn.disabled=!anySel;
-
   const champEl=document.getElementById("champion");
   const list=document.getElementById("list");
   if(list)list.innerHTML="";
+  if(clearBtn)clearBtn.disabled=!anySel;
 
-  // ---- not all three selected: prompt, no ranking ----
-  if(!complete){
-    if(champEl)champEl.innerHTML=`<div class="inner"><div class="crown">👑 Pick a ranking</div>
-      <p style="color:var(--muted);margin-top:14px;line-height:1.6">Select a <b style="color:var(--text)">Region</b>,
-      <b style="color:var(--text)">Build</b> and <b style="color:var(--text)">Mode</b> above to view its independent ranking. 🏴‍☠️</p></div>`;
-    if(list)list.innerHTML='<div class="empty">Select a <b>Region</b>, <b>Build</b> and <b>Mode</b> to view a ranking.</div>';
-    return;
-  }
+  if(complete) renderExact(champEl,list,ctxEl,countEl);
+  else         renderAggregated(champEl,list,ctxEl,countEl);
+}
 
-  // ---- all three selected but no players (missing/empty board) ----
+// ---- exact combo: the manually-set board for one specific Region+Build+Mode ----
+function renderExact(champEl,list,ctxEl,countEl){
+  const combo=findCombo(state.region,state.build,state.mode);
+  const names=combo?combo.names:[];
+  const label=`${state.region} · ${state.build} · ${state.mode}`;
+  if(ctxEl)ctxEl.innerHTML=`<b>${state.region}</b> · <b>${state.build}</b> · <b>${state.mode}</b>`;
+  if(countEl)countEl.innerHTML=`<span class="dotc"></span>Showing <b>${names.length}</b> player${names.length===1?"":"s"} in this ranking`;
+
   if(!names.length){
     if(champEl)champEl.innerHTML=`<div class="inner"><div class="crown">👑 No #1 yet</div>
       <p style="color:var(--muted);margin-top:14px">No ranking exists for <b style="color:var(--text)">${label}</b> yet. 🏴‍☠️</p></div>`;
@@ -570,7 +603,6 @@ function render(){
     return;
   }
 
-  // ---- champion = #1 of this combo ----
   const c=combo;
   champEl.innerHTML=`
     <div class="inner">
@@ -584,7 +616,6 @@ function render(){
       </div>
     </div>`;
 
-  // ---- full ranking (array order = rank) ----
   names.forEach((nm,i)=>{
     const rank=i+1;const d=document.createElement("div");
     d.className="row"+(rank<=3?` t${rank}`:"");d.style.animationDelay=(i*0.06)+"s";
@@ -597,6 +628,58 @@ function render(){
         <div class="tags">${buildPill(c.build)}${modePill(c.mode)}</div>
       </div>
       <div class="row-rating"><div class="verticon">● Verified</div></div>`;
+    list.appendChild(d);
+  });
+}
+
+// ---- aggregated: one combined board across every matching combo ----
+function renderAggregated(champEl,list,ctxEl,countEl){
+  const combos=matchingCombos();
+  const ranking=aggregateRanking(combos);
+  const label=scopeLabel();
+  if(ctxEl)ctxEl.innerHTML=`<b>${dimLabel(state.region,"All Regions")}</b> · <b>${dimLabel(state.build,"All Builds")}</b> · <b>${dimLabel(state.mode,"All Modes")}</b>`;
+  if(countEl)countEl.innerHTML=ranking.length
+    ?`<span class="dotc"></span>Aggregated ranking — <b>${ranking.length}</b> player${ranking.length===1?"":"s"} across <b>${combos.length}</b> board${combos.length===1?"":"s"}`
+    :`<span class="dotc"></span>No rankings match this selection yet`;
+
+  if(!ranking.length){
+    if(champEl)champEl.innerHTML=`<div class="inner"><div class="crown">👑 No #1 yet</div>
+      <p style="color:var(--muted);margin-top:14px">No rankings match <b style="color:var(--text)">${label}</b> yet. 🏴‍☠️</p></div>`;
+    if(list)list.innerHTML=`<div class="empty">No players ranked for <b>${label}</b> yet. 🏴‍☠️</div>`;
+    return;
+  }
+
+  const top=ranking[0];
+  champEl.innerHTML=`
+    <div class="inner">
+      <div class="crown">👑 Top Ranked — ${label}</div>
+      <div class="champ-main">
+        <div class="champ-av" style="background:${grad(0)}"><span class="badge">1</span>${ini(top.name)}</div>
+        <div>
+          <div class="champ-name">${top.name}</div>
+          <div class="champ-sub">${scopePills()}</div>
+        </div>
+      </div>
+      <div class="champ-note">Aggregated across <b>${combos.length}</b> matching ranking${combos.length===1?"":"s"} · <b>${top.points}</b> pts from <b>${top.boards}</b> board${top.boards===1?"":"s"}.</div>
+    </div>`;
+
+  // for an "All" dimension we can't show a single value, so only render pills for
+  // the dimensions that are pinned; a violet pill shows how many boards back each player
+  const namePill=state.region==="All"?"":regPill(state.region);
+  ranking.forEach((p,i)=>{
+    const rank=i+1;const d=document.createElement("div");
+    d.className="row"+(rank<=3?` t${rank}`:"");d.style.animationDelay=(i*0.06)+"s";
+    const rankMark=MEDALS[rank]?`<span class="medal">${MEDALS[rank]}</span>`:`<span class="hash">#</span><span>${rank}</span>`;
+    const tagPills=`${state.build==="All"?"":buildPill(state.build)}${state.mode==="All"?"":modePill(state.mode)}`
+      +`<span class="pill" style="color:var(--violet);background:rgba(149,104,248,.12);border:1px solid var(--line-violet)">${p.boards} board${p.boards===1?"":"s"}</span>`;
+    d.innerHTML=`
+      <div class="rank">${rankMark}</div>
+      <div class="avatar" style="background:${grad(rank-1)}">${ini(p.name)}</div>
+      <div class="pinfo">
+        <div class="pname">${p.name} ${namePill}</div>
+        <div class="tags">${tagPills}</div>
+      </div>
+      <div class="row-rating"><div class="verticon">★ ${p.points} pts</div></div>`;
     list.appendChild(d);
   });
 }
