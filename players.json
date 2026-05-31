@@ -1,4 +1,8 @@
 {
   "version": 2,
-  "leaderboards": {}
+  "leaderboards": {
+    "NA|Sword|1v1s": [
+      "Lizard"
+    ]
+  }
 }
