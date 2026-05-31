@@ -1,27 +1,4 @@
 {
   "version": 2,
-  "leaderboards": {
-    "NA|Gun|1v1s": [
-      "Kriz"
-    ],
-    "NA|Gun|2v2s": [
-      "Kriz"
-    ],
-    "EU|Gun|1v1s": [
-      "chicken/tavuk",
-      "Symbolic"
-    ],
-    "EU|Gun|2v2s": [
-      "chicken/tavuk"
-    ],
-    "NA|Sword|1v1s": [
-      "Lizard",
-      "Robs",
-      "Truck"
-    ],
-    "NA|Sword|2v2s": [
-      "Lizard",
-      "Truck"
-    ]
-  }
+  "leaderboards": {}
 }
