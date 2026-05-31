@@ -30,5 +30,16 @@
     "modes": [
       "1v1s"
     ]
+  },
+  {
+    "name": "Lizard",
+    "region": "NA",
+    "builds": [
+      "Sword"
+    ],
+    "modes": [
+      "1v1s",
+      "2v2s"
+    ]
   }
 ]
