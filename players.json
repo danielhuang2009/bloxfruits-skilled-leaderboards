@@ -19,5 +19,16 @@
     "modes": [
       "1v1s"
     ]
+  },
+  {
+    "name": "Kriz",
+    "region": "NA",
+    "builds": [
+      "Gun"
+    ],
+    "modes": [
+      "1v1s",
+      "2v2s"
+    ]
   }
 ]
