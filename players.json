@@ -1,12 +1,1 @@
-[
-  {
-    "name": "truck",
-    "region": "NA",
-    "builds": [
-      "Sword"
-    ],
-    "modes": [
-      "1v1s"
-    ]
-  }
-]
+[]
