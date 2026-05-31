@@ -275,5 +275,15 @@
     "modes": [
       "1v1"
     ]
+  },
+  {
+    "name": "truck",
+    "region": "na",
+    "builds": [
+      "sword"
+    ],
+    "modes": [
+      "2v2s"
+    ]
   }
 ]
