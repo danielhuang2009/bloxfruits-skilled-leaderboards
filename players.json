@@ -51,5 +51,16 @@
     "modes": [
       "1v1s"
     ]
+  },
+  {
+    "name": "Truck",
+    "region": "NA",
+    "builds": [
+      "Sword"
+    ],
+    "modes": [
+      "1v1s",
+      "2v2s"
+    ]
   }
 ]
