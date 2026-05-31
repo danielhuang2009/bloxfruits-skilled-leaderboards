@@ -197,6 +197,24 @@
   .chip.active{color:#160f04;border-color:transparent;
     background:linear-gradient(180deg,var(--gold-bright),var(--gold-deep));
     box-shadow:0 8px 22px -6px rgba(232,195,114,.55),inset 0 1px 1px rgba(255,255,255,.5)}
+  /* filter footer: live counter (left) + clear-filters button (right) */
+  .filter-foot{display:flex;align-items:center;justify-content:space-between;gap:14px;
+    margin-top:16px;padding-top:14px;border-top:1px solid var(--line);flex-wrap:wrap}
+  .filter-count{font-family:'Sora';font-size:12.5px;font-weight:600;color:var(--muted);
+    letter-spacing:.3px;display:inline-flex;align-items:center;gap:8px}
+  .filter-count b{color:var(--gold);font-weight:700}
+  .filter-count .dotc{width:7px;height:7px;border-radius:50%;background:var(--teal);
+    box-shadow:0 0 10px var(--teal)}
+  .clear-btn{font-family:'Sora';font-size:12.5px;font-weight:600;cursor:pointer;color:var(--gold);
+    background:linear-gradient(180deg,rgba(232,195,114,.10),rgba(232,195,114,.02));
+    border:1px solid var(--line-gold);padding:8px 15px;border-radius:11px;transition:.18s var(--ease);
+    display:inline-flex;align-items:center;gap:7px;white-space:nowrap}
+  .clear-btn:hover{color:#160f04;border-color:transparent;
+    background:linear-gradient(180deg,var(--gold-bright),var(--gold-deep));
+    box-shadow:0 8px 22px -6px rgba(232,195,114,.55);transform:translateY(-1px)}
+  .clear-btn:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+  .clear-btn:disabled{opacity:.5;cursor:default;transform:none;box-shadow:none;
+    color:var(--muted-2);border-color:var(--line);background:var(--surface)}
 
   /* ---------------- leaderboard list ---------------- */
   .list{display:flex;flex-direction:column;gap:10px;margin-top:16px}
@@ -351,6 +369,10 @@
         <div class="fgroup"><span class="label">🗡 Build</span><div class="chips" id="f-build"></div></div>
         <div class="fgroup"><span class="label">🎯 Mode</span><div class="chips" id="f-mode"></div></div>
       </div>
+      <div class="filter-foot">
+        <span class="filter-count" id="filter-count"><span class="dotc"></span>Showing 0 of 0 players</span>
+        <button class="clear-btn" id="clear-filters" type="button">✕ Clear filters</button>
+      </div>
     </div>
 
     <div class="list" id="list"></div>
@@ -467,9 +489,10 @@ const buildPills=p=>p.builds.map(b=>`<span class="pill build">🗡 ${b}</span>`)
 const modePills =p=>p.modes.map(m=>`<span class="pill mode">${m}</span>`).join("");
 
 /* ---------------- CURRENT view ---------------- */
-// Single-focus filtering: picking a chip in ANY group resets the other two to
-// "All". Because every single dimension (each region, each build, each mode) has
-// at least 5 players, EVERY click is guaranteed to show a full top 5.
+// Combined filtering: Region, Build and Mode stack as an intersection. Each
+// group keeps a single selection (a value or "All"); picking a chip in one
+// group never clears the others, so any mix (e.g. EU + Gun + 2v2s) stays active
+// and only players matching ALL selected filters are shown.
 function syncChips(){
   [["f-region","region"],["f-build","build"],["f-mode","mode"]].forEach(([id,key])=>{
     const c=document.getElementById(id);if(!c)return;
@@ -483,8 +506,7 @@ function makeChips(id,vals,key){
     const b=document.createElement("button");
     b.className="chip";b.textContent=v;b.setAttribute("aria-pressed","false");
     b.onclick=()=>{
-      state.region="All";state.build="All";state.mode="All";
-      state[key]=v;
+      state[key]=v;          // combine across categories — do NOT reset the others
       syncChips();render();
     };
     c.appendChild(b);
@@ -500,6 +522,13 @@ function render(){
   if(state.mode!=="All")parts.push(state.mode);
   const overall=state.region==="All"&&state.build==="All"&&state.mode==="All";
   document.getElementById("ctx").innerHTML=parts.map(x=>`<b>${x}</b>`).join(" · ")+(overall?" · Overall":"");
+
+  // live counter + clear-filters enabled state (update before any early return)
+  const total=PLAYERS.length;
+  const countEl=document.getElementById("filter-count");
+  if(countEl)countEl.innerHTML=`<span class="dotc"></span>Showing <b>${rows.length}</b> of <b>${total}</b> player${total===1?"":"s"}`;
+  const clearBtn=document.getElementById("clear-filters");
+  if(clearBtn)clearBtn.disabled=overall;
 
   const champEl=document.getElementById("champion");
   if(rows.length){
@@ -710,6 +739,11 @@ async function boot(){
   makeChips("f-region",REGIONS,"region");
   makeChips("f-build",BUILDS,"build");
   makeChips("f-mode",MODES,"mode");
+  const clearBtn=document.getElementById("clear-filters");
+  if(clearBtn)clearBtn.onclick=()=>{
+    state.region="All";state.build="All";state.mode="All";   // reset all three at once
+    syncChips();render();
+  };
   syncChips();
   render();
   renderCategories();
