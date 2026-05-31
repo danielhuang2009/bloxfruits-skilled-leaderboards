@@ -9,5 +9,15 @@
       "1v1s",
       "2v2s"
     ]
+  },
+  {
+    "name": "Symbolic",
+    "region": "EU",
+    "builds": [
+      "Gun"
+    ],
+    "modes": [
+      "1v1s"
+    ]
   }
 ]
