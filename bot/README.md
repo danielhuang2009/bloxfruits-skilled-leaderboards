@@ -343,6 +343,7 @@ Admin only (require `ADMIN_ROLE_ID` or Guild Administrator):
 | `/add`         | `name`, `region`, `builds`, `modes`                     | Append a player at the bottom. `builds`/`modes` are comma-separated. |
 | `/remove`      | `name`                                                  | Remove a player (case-insensitive). |
 | `/move`        | `name`, `position`                                      | Move a player to a rank (1 = top; beyond the list size → end). |
+| `/rename`      | `name`, `new_name`                                      | Rename a player, keeping rank/region/builds/modes (no duplicate names). |
 | `/addbuild`    | `name`, `build`                                         | Add a build to a player (no case-insensitive duplicates). |
 | `/removebuild` | `name`, `build`                                         | Remove a build from a player. |
 | `/updateregion`| `name`, `region`                                        | Change a player's region. |

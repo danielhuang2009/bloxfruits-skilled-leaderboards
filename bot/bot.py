@@ -228,6 +228,37 @@ def build_updateregion(name: str, region: str) -> Callable:
     return mutate
 
 
+def build_rename(name: str, new_name: str) -> Callable:
+    name = name.strip()
+    new_name = new_name.strip()
+    if not name:
+        raise CommandError("`name` cannot be empty.")
+    if not new_name:
+        raise CommandError("`new_name` cannot be empty.")
+
+    def mutate(players: list[dict[str, Any]]):
+        idx = find_player_index(players, name)
+        if idx == -1:
+            raise CommandError(f"No player named **{name}** was found.")
+        # Prevent duplicates: a *different* player must not already use new_name
+        # (case-insensitive). Renaming a player to a new casing of their own name
+        # is allowed because the match is at the same index.
+        target = new_name.strip().lower()
+        for i, p in enumerate(players):
+            if i != idx and str(p.get("name", "")).strip().lower() == target:
+                raise CommandError(f"A player named **{new_name}** already exists.")
+        old = players[idx]["name"]
+        # Change only the name; rank (array position), region, builds and modes
+        # are left untouched.
+        players[idx]["name"] = new_name
+        return players, {
+            "commit_message": f"Rename player: {old} to {new_name}",
+            "response": f"✏️ Renamed **{old}** to **{new_name}**",
+        }
+
+    return mutate
+
+
 def build_editplayer(
     name: str,
     region: str | None,
@@ -427,6 +458,13 @@ async def remove(interaction: discord.Interaction, name: str) -> None:
 @is_admin()
 async def move(interaction: discord.Interaction, name: str, position: int) -> None:
     await _execute(interaction, "move", lambda: build_move(name, position))
+
+
+@bot.tree.command(name="rename", description="Rename a player, keeping their rank, region, builds and modes.")
+@app_commands.describe(name="Current player name (case-insensitive)", new_name="New player name")
+@is_admin()
+async def rename(interaction: discord.Interaction, name: str, new_name: str) -> None:
+    await _execute(interaction, "rename", lambda: build_rename(name, new_name))
 
 
 @bot.tree.command(name="addbuild", description="Add a build to an existing player.")
