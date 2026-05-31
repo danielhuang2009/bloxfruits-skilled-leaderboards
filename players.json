@@ -267,16 +267,6 @@
     ]
   },
   {
-    "name": "testguy",
-    "region": "NA",
-    "builds": [
-      "Gun"
-    ],
-    "modes": [
-      "1v1"
-    ]
-  },
-  {
     "name": "truck",
     "region": "NA",
     "builds": [
