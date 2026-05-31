@@ -265,5 +265,15 @@
     "modes": [
       "1v1s"
     ]
+  },
+  {
+    "name": "testguy",
+    "region": "na",
+    "builds": [
+      "gun"
+    ],
+    "modes": [
+      "1v1"
+    ]
   }
 ]
