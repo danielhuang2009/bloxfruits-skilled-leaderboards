@@ -362,8 +362,8 @@
     <div class="cat-grid" id="cat-grid"></div>
 
     <div class="endnote">
-      <div class="tip"><b>Edit players &amp; order:</b> open this file and edit the <b>PLAYERS</b> list near
-      the top of the script. The list order = the ranking (top = #1).</div>
+      <div class="tip"><b>Edit players &amp; order:</b> the leaderboard loads from <b>players.json</b>, managed
+      from Discord via slash commands. The file's array order = the ranking (top = #1).</div>
     </div>
   </section>
 
@@ -420,39 +420,14 @@
 
 <script>
 /* ============================================================
-   EDIT YOUR PLAYERS HERE  (the "Current" leaderboard)
+   PLAYERS DATA  (the "Current" leaderboard)
    ------------------------------------------------------------
+   Players now live in players.json (managed via the Discord bot).
    name / region / builds (["Gun","Sword"]) / modes (["1v1s","2v2s"])
-   RANKING = list order. First = #1. Move entries to re-rank.
-   The roster is sized so every single filter shows a full top 5.
+   RANKING = array order in that file. First = #1.
+   Loaded asynchronously at boot — see loadPlayers()/boot() below.
    ============================================================ */
-const PLAYERS = [
-  {name:"Player #1",  region:"NA",   builds:["Gun","Sword"], modes:["1v1s","2v2s"]},
-  {name:"Player #2",  region:"EU",   builds:["Sword"],       modes:["1v1s"]},
-  {name:"Player #3",  region:"ASIA", builds:["Gun"],         modes:["1v1s","2v2s"]},
-  {name:"Player #4",  region:"SA",   builds:["Gun","Sword"], modes:["2v2s"]},
-  {name:"Player #5",  region:"OCE",  builds:["Sword"],       modes:["1v1s"]},
-  {name:"Player #6",  region:"NA",   builds:["Gun"],         modes:["1v1s","2v2s"]},
-  {name:"Player #7",  region:"EU",   builds:["Gun","Sword"], modes:["1v1s"]},
-  {name:"Player #8",  region:"ASIA", builds:["Sword"],       modes:["2v2s"]},
-  {name:"Player #9",  region:"SA",   builds:["Gun"],         modes:["1v1s"]},
-  {name:"Player #10", region:"OCE",  builds:["Gun","Sword"], modes:["1v1s","2v2s"]},
-  {name:"Player #11", region:"NA",   builds:["Sword"],       modes:["2v2s"]},
-  {name:"Player #12", region:"EU",   builds:["Gun"],         modes:["1v1s","2v2s"]},
-  {name:"Player #13", region:"ASIA", builds:["Gun","Sword"], modes:["1v1s"]},
-  {name:"Player #14", region:"SA",   builds:["Sword"],       modes:["1v1s","2v2s"]},
-  {name:"Player #15", region:"OCE",  builds:["Gun"],         modes:["2v2s"]},
-  {name:"Player #16", region:"NA",   builds:["Gun","Sword"], modes:["1v1s"]},
-  {name:"Player #17", region:"EU",   builds:["Sword"],       modes:["2v2s"]},
-  {name:"Player #18", region:"ASIA", builds:["Gun"],         modes:["1v1s"]},
-  {name:"Player #19", region:"SA",   builds:["Gun","Sword"], modes:["1v1s","2v2s"]},
-  {name:"Player #20", region:"OCE",  builds:["Sword"],       modes:["1v1s"]},
-  {name:"Player #21", region:"NA",   builds:["Gun"],         modes:["2v2s"]},
-  {name:"Player #22", region:"EU",   builds:["Gun","Sword"], modes:["1v1s","2v2s"]},
-  {name:"Player #23", region:"ASIA", builds:["Sword"],       modes:["1v1s"]},
-  {name:"Player #24", region:"SA",   builds:["Gun"],         modes:["2v2s"]},
-  {name:"Player #25", region:"OCE",  builds:["Gun","Sword"], modes:["1v1s"]},
-];
+let PLAYERS = [];
 
 /* ============================================================
    EDIT YOUR GOATS HERE  (the "GOATS" hall of fame)
@@ -474,9 +449,9 @@ const GOATS = [
 const AV=["#3b7fe0","#e0566c","#d6ad52","#41e0c2","#9568f8","#1eb3c8","#ff8a4d","#5a86e0","#cc6299","#48a878"];
 const MEDALS={1:"🥇",2:"🥈",3:"🥉"};
 const uniq=a=>[...new Set(a)];
-const REGIONS=["All",...uniq(PLAYERS.map(p=>p.region))];
-const BUILDS =["All",...uniq(PLAYERS.flatMap(p=>p.builds))];
-const MODES  =["All",...uniq(PLAYERS.flatMap(p=>p.modes))];
+let REGIONS=["All"];
+let BUILDS =["All"];
+let MODES  =["All"];
 const state={region:"All",build:"All",mode:"All"};
 
 const ini=n=>{const m=n.match(/\d+/);return m?m[0]:n.slice(0,2).toUpperCase();};
@@ -697,15 +672,44 @@ if(copyBtn){
   });
 }
 
+/* ---------------- data loading ---------------- */
+// Players now live in players.json (managed by the Discord bot). We load it
+// asynchronously; the ONLY change vs. the old inline array is the data source.
+function isValidPlayer(p){
+  return p && typeof p==="object"
+    && typeof p.name==="string"   && p.name.trim()!==""
+    && typeof p.region==="string" && p.region.trim()!==""
+    && Array.isArray(p.builds) && Array.isArray(p.modes);
+}
+async function loadPlayers(){
+  try{
+    const res=await fetch("players.json",{cache:"no-cache"});
+    if(!res.ok) throw new Error("HTTP "+res.status+" "+res.statusText);
+    const data=await res.json();                 // throws on malformed JSON
+    if(!Array.isArray(data)) throw new Error("players.json root is not an array");
+    return data.filter(isValidPlayer);            // drop malformed entries, preserve order
+  }catch(err){
+    console.error("[leaderboard] Could not load players.json:",err);
+    return [];                                    // graceful empty state — page never crashes
+  }
+}
+
 /* ---------------- boot ---------------- */
-makeChips("f-region",REGIONS,"region");
-makeChips("f-build",BUILDS,"build");
-makeChips("f-mode",MODES,"mode");
-syncChips();
-render();
-renderCategories();
-renderGoats();
-setView(VIEWS.includes(location.hash.slice(1))?location.hash.slice(1):'current');
+async function boot(){
+  PLAYERS=await loadPlayers();
+  REGIONS=["All",...uniq(PLAYERS.map(p=>p.region))];
+  BUILDS =["All",...uniq(PLAYERS.flatMap(p=>p.builds))];
+  MODES  =["All",...uniq(PLAYERS.flatMap(p=>p.modes))];
+  makeChips("f-region",REGIONS,"region");
+  makeChips("f-build",BUILDS,"build");
+  makeChips("f-mode",MODES,"mode");
+  syncChips();
+  render();
+  renderCategories();
+  renderGoats();
+  setView(VIEWS.includes(location.hash.slice(1))?location.hash.slice(1):'current');
+}
+boot();
 </script>
 </body>
 </html>
