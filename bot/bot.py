@@ -1,13 +1,21 @@
-"""Discord bot that manages the Blox Fruits skill-build leaderboard.
+"""Discord bot that manages the Blox Fruits skill-build leaderboards.
 
 The bot edits ``players.json`` in the website's GitHub repository via the
 GitHub Contents API. Every successful command produces a commit, which triggers
 an automatic Cloudflare Pages redeploy — no manual file editing is ever needed.
 
+Data model (v2)
+---------------
+``players.json`` holds a set of INDEPENDENT rankings keyed by a normalized
+``REGION|Build|mode`` combo. A player may appear in any number of combos at
+independent ranks; array order within a combo is the ranking (first = #1)::
+
+    { "version": 2, "leaderboards": { "NA|Sword|1v1s": ["truck", "kriz"] } }
+
 Architecture
 ------------
 * ``config.py``        — environment loading / validation.
-* ``github_client.py`` — async transport, data validation, concurrency retry.
+* ``github_client.py`` — async transport, document validation, concurrency retry.
 * ``bot.py`` (here)    — Discord slash commands, permissions, input parsing,
                          domain mutations, logging, and user-facing responses.
 
@@ -38,7 +46,7 @@ from github_client import (
 logger = logging.getLogger("leaderboard.bot")
 
 # A mutation builder returns a callable suitable for GitHubClient.commit_change.
-MutationBuilder = Callable[[], Callable[[list[dict[str, Any]]], tuple[list[dict[str, Any]], dict[str, Any]]]]
+MutationBuilder = Callable[[], Callable[[dict[str, Any]], tuple[dict[str, Any], dict[str, Any]]]]
 
 
 # --------------------------------------------------------------------------- #
@@ -51,294 +59,188 @@ class CommandError(Exception):
 # --------------------------------------------------------------------------- #
 # Small pure helpers
 # --------------------------------------------------------------------------- #
-def parse_csv(raw: str) -> list[str]:
-    """Split a comma-separated string into a trimmed, de-duplicated list.
+def normalize_combo(region: str, build: str, mode: str) -> tuple[str, str, str, str]:
+    """Normalize the three combo parts and build the ``REGION|Build|mode`` key.
 
-    Empty fragments are dropped. De-duplication is case-insensitive but keeps
-    the first-seen casing and original order.
+    * region -> UPPERCASE   (``na`` -> ``NA``)
+    * build  -> Title Case  (``sword`` -> ``Sword``)
+    * mode   -> lowercase   (``2V2S`` -> ``2v2s``)
+
+    Returns ``(region, build, mode, key)``. Raises CommandError on an empty part.
     """
-    seen: set[str] = set()
-    out: list[str] = []
-    for part in raw.split(","):
-        item = part.strip()
-        if not item:
-            continue
-        key = item.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(item)
-    return out
+    region_n = str(region).strip().upper()
+    build_n = str(build).strip().title()
+    mode_n = str(mode).strip().lower()
+    if not region_n:
+        raise CommandError("`region` cannot be empty.")
+    if not build_n:
+        raise CommandError("`build` cannot be empty.")
+    if not mode_n:
+        raise CommandError("`mode` cannot be empty.")
+    return region_n, build_n, mode_n, f"{region_n}|{build_n}|{mode_n}"
 
 
-def find_player_index(players: list[dict[str, Any]], name: str) -> int:
-    """Return the index of ``name`` (case-insensitive) or -1 if not present."""
-    target = name.strip().lower()
-    for i, p in enumerate(players):
-        if str(p.get("name", "")).strip().lower() == target:
+def format_combo(region: str, build: str, mode: str) -> str:
+    """Human-friendly combo label, e.g. ``NA · Sword · 1v1s``."""
+    return f"{region} · {build} · {mode}"
+
+
+def find_name_index(names: list[Any], player: str) -> int:
+    """Return the index of ``player`` (case-insensitive) in ``names`` or -1."""
+    target = player.strip().lower()
+    for i, n in enumerate(names):
+        if str(n).strip().lower() == target:
             return i
     return -1
 
 
-def _dedupe_ci(items: list[str]) -> list[str]:
-    """Drop empty/case-insensitively-duplicate strings, keeping first-seen order."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for item in items:
-        s = str(item).strip()
-        if not s:
-            continue
-        key = s.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(s)
-    return out
-
-
-def normalize_player(player: dict[str, Any]) -> dict[str, Any]:
-    """Normalize a player's casing in place so filter values stay consistent.
-
-    * region -> UPPERCASE   (``na`` -> ``NA``)
-    * builds -> Title Case   (``sword`` -> ``Sword``)
-    * modes  -> lowercase    (``2V2S`` -> ``2v2s``)
-
-    builds/modes are also de-duplicated case-insensitively. The player's name,
-    rank (array position) and the set of values are otherwise preserved.
-    """
-    player["region"] = str(player.get("region", "")).strip().upper()
-    player["builds"] = _dedupe_ci([str(b).strip().title() for b in player.get("builds", [])])
-    player["modes"] = _dedupe_ci([str(m).strip().lower() for m in player.get("modes", [])])
-    return player
+def board_text(names: list[str], *, limit: int = 25) -> str:
+    """Render a board's order as ``#1 name`` lines, truncating very long boards."""
+    if not names:
+        return "_(empty)_"
+    lines = [f"#{i + 1} {n}" for i, n in enumerate(names[:limit])]
+    if len(names) > limit:
+        lines.append(f"… (+{len(names) - limit} more)")
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
-# Mutation builders — each returns a pure function (players -> (new, info)).
+# Mutation builders — each returns a pure function (document -> (new, info)).
 # They raise CommandError for domain problems; commit_change re-fetches and
 # re-applies them on conflict, so they must be deterministic given the input.
 # --------------------------------------------------------------------------- #
-def build_add(name: str, region: str, builds_raw: str, modes_raw: str) -> Callable:
-    name = name.strip()
-    region = region.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
-    if not region:
-        raise CommandError("`region` cannot be empty.")
-    builds = parse_csv(builds_raw)
-    modes = parse_csv(modes_raw)
-    if not builds:
-        raise CommandError("Provide at least one build (comma-separated).")
-    if not modes:
-        raise CommandError("Provide at least one mode (comma-separated).")
-
-    def mutate(players: list[dict[str, Any]]):
-        if find_player_index(players, name) != -1:
-            raise CommandError(f"A player named **{name}** already exists.")
-        players.append(normalize_player({"name": name, "region": region, "builds": builds, "modes": modes}))
-        rank = len(players)
-        return players, {
-            "commit_message": f"Add player: {name}",
-            "response": f"✅ Added **{name}** at rank #{rank}",
-        }
-
-    return mutate
-
-
-def build_remove(name: str) -> Callable:
-    name = name.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
-
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
-        if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        actual = players[idx]["name"]
-        players.pop(idx)
-        return players, {
-            "commit_message": f"Remove player: {actual}",
-            "response": f"🗑️ Removed **{actual}**",
-        }
-
-    return mutate
-
-
-def build_move(name: str, position: int) -> Callable:
-    name = name.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
+def build_setrank(player: str, region: str, build: str, mode: str, position: int) -> Callable:
+    player = player.strip()
+    if not player:
+        raise CommandError("`player` cannot be empty.")
     if position < 1:
         raise CommandError("Position must be 1 or greater.")
+    region_n, build_n, mode_n, key = normalize_combo(region, build, mode)
+    label = format_combo(region_n, build_n, mode_n)
 
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
-        if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        player = players.pop(idx)
+    def mutate(doc: dict[str, Any]):
+        boards: dict[str, list[str]] = doc["leaderboards"]
+        board = boards.setdefault(key, [])
+        idx = find_name_index(board, player)
+        if idx != -1:
+            # Already in this combo — preserve their stored casing, then move.
+            actual = board.pop(idx)
+        else:
+            actual = player
         # Positions beyond the list size clamp to the end.
-        target = min(position - 1, len(players))
-        players.insert(target, player)
+        target = min(position - 1, len(board))
+        board.insert(target, actual)
+        boards[key] = board
         rank = target + 1
-        return players, {
-            "commit_message": f"Move player: {player['name']} to rank {rank}",
-            "response": f"↕️ Moved **{player['name']}** to rank #{rank}",
+        return doc, {
+            "commit_message": f"setrank: {actual} -> #{rank} in {key}",
+            "response": (
+                f"✅ Set **{actual}** to **#{rank}** in **{label}**\n\n"
+                f"**{label}**\n{board_text(board)}"
+            ),
         }
 
     return mutate
 
 
-def build_addbuild(name: str, build: str) -> Callable:
-    name = name.strip()
-    build = build.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
-    if not build:
-        raise CommandError("`build` cannot be empty.")
+def build_removefrom(player: str, region: str, build: str, mode: str) -> Callable:
+    player = player.strip()
+    if not player:
+        raise CommandError("`player` cannot be empty.")
+    region_n, build_n, mode_n, key = normalize_combo(region, build, mode)
+    label = format_combo(region_n, build_n, mode_n)
 
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
+    def mutate(doc: dict[str, Any]):
+        boards: dict[str, list[str]] = doc["leaderboards"]
+        board = boards.get(key)
+        if not board:
+            raise CommandError(f"There is no ranking for **{label}** yet.")
+        idx = find_name_index(board, player)
         if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        actual = players[idx]["name"]
-        builds: list[str] = players[idx]["builds"]
-        if any(str(b).strip().lower() == build.lower() for b in builds):
-            raise CommandError(f"**{actual}** already has the build **{build}**.")
-        builds.append(build)
-        normalize_player(players[idx])
-        return players, {
-            "commit_message": f"Add build: {actual}",
-            "response": f"✅ Added build **{build}** to **{actual}**",
+            raise CommandError(f"**{player}** is not ranked in **{label}**.")
+        actual = board.pop(idx)
+        # Clean up a board that just became empty so it stops cluttering filters.
+        if not board:
+            del boards[key]
+            tail = "\n\n_(that ranking is now empty and was removed)_"
+        else:
+            tail = f"\n\n**{label}**\n{board_text(board)}"
+        return doc, {
+            "commit_message": f"removefrom: {actual} out of {key}",
+            "response": f"🗑️ Removed **{actual}** from **{label}**{tail}",
         }
 
     return mutate
 
 
-def build_removebuild(name: str, build: str) -> Callable:
-    name = name.strip()
-    build = build.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
-    if not build:
-        raise CommandError("`build` cannot be empty.")
+def build_remove(player: str) -> Callable:
+    player = player.strip()
+    if not player:
+        raise CommandError("`player` cannot be empty.")
 
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
-        if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        actual = players[idx]["name"]
-        builds: list[str] = players[idx]["builds"]
-        kept = [b for b in builds if str(b).strip().lower() != build.lower()]
-        if len(kept) == len(builds):
-            raise CommandError(f"**{actual}** does not have the build **{build}**.")
-        players[idx]["builds"] = kept
-        return players, {
-            "commit_message": f"Remove build: {actual}",
-            "response": f"🗑️ Removed build **{build}** from **{actual}**",
+    def mutate(doc: dict[str, Any]):
+        boards: dict[str, list[str]] = doc["leaderboards"]
+        removed_from: list[str] = []
+        actual = player
+        for key in list(boards.keys()):
+            board = boards[key]
+            idx = find_name_index(board, player)
+            if idx == -1:
+                continue
+            actual = board.pop(idx)
+            removed_from.append(key)
+            if not board:
+                del boards[key]
+        if not removed_from:
+            raise CommandError(f"**{player}** is not ranked in any leaderboard.")
+        count = len(removed_from)
+        return doc, {
+            "commit_message": f"remove: {actual} from all ({count}) leaderboards",
+            "response": f"🗑️ Removed **{actual}** from **{count}** leaderboard{'s' if count != 1 else ''}.",
         }
 
     return mutate
 
 
-def build_updateregion(name: str, region: str) -> Callable:
-    name = name.strip()
-    region = region.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
-    if not region:
-        raise CommandError("`region` cannot be empty.")
-
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
-        if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        actual = players[idx]["name"]
-        players[idx]["region"] = region
-        normalize_player(players[idx])
-        return players, {
-            "commit_message": f"Update region: {actual}",
-            "response": f"🌍 Updated region for **{actual}** to **{players[idx]['region']}**",
-        }
-
-    return mutate
-
-
-def build_rename(name: str, new_name: str) -> Callable:
-    name = name.strip()
+def build_rename(player: str, new_name: str) -> Callable:
+    player = player.strip()
     new_name = new_name.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
+    if not player:
+        raise CommandError("`player` cannot be empty.")
     if not new_name:
         raise CommandError("`new_name` cannot be empty.")
+    new_key = new_name.lower()
 
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
-        if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        # Prevent duplicates: a *different* player must not already use new_name
-        # (case-insensitive). Renaming a player to a new casing of their own name
-        # is allowed because the match is at the same index.
-        target = new_name.strip().lower()
-        for i, p in enumerate(players):
-            if i != idx and str(p.get("name", "")).strip().lower() == target:
-                raise CommandError(f"A player named **{new_name}** already exists.")
-        old = players[idx]["name"]
-        # Change only the name; rank (array position), region, builds and modes
-        # are left untouched.
-        players[idx]["name"] = new_name
-        # Renaming also re-normalizes the player's other fields as a safety net.
-        normalize_player(players[idx])
-        return players, {
-            "commit_message": f"Rename player: {old} to {new_name}",
-            "response": f"✏️ Renamed **{old}** to **{new_name}**",
-        }
-
-    return mutate
-
-
-def build_editplayer(
-    name: str,
-    region: str | None,
-    builds_raw: str | None,
-    modes_raw: str | None,
-) -> Callable:
-    name = name.strip()
-    if not name:
-        raise CommandError("`name` cannot be empty.")
-
-    new_region = region.strip() if region is not None else None
-    if region is not None and not new_region:
-        raise CommandError("`region` cannot be empty when provided.")
-
-    new_builds = parse_csv(builds_raw) if builds_raw is not None else None
-    if builds_raw is not None and not new_builds:
-        raise CommandError("Provide at least one build when editing builds.")
-
-    new_modes = parse_csv(modes_raw) if modes_raw is not None else None
-    if modes_raw is not None and not new_modes:
-        raise CommandError("Provide at least one mode when editing modes.")
-
-    if new_region is None and new_builds is None and new_modes is None:
-        raise CommandError("Provide at least one field to edit (region, builds, or modes).")
-
-    def mutate(players: list[dict[str, Any]]):
-        idx = find_player_index(players, name)
-        if idx == -1:
-            raise CommandError(f"No player named **{name}** was found.")
-        actual = players[idx]["name"]
-        changed: list[str] = []
-        if new_region is not None:
-            players[idx]["region"] = new_region
-            changed.append("region")
-        if new_builds is not None:
-            players[idx]["builds"] = new_builds
-            changed.append("builds")
-        if new_modes is not None:
-            players[idx]["modes"] = new_modes
-            changed.append("modes")
-        normalize_player(players[idx])
-        return players, {
-            "commit_message": f"Edit player: {actual}",
-            "response": f"✏️ Updated {', '.join(changed)} for **{actual}**",
+    def mutate(doc: dict[str, Any]):
+        boards: dict[str, list[str]] = doc["leaderboards"]
+        affected = 0
+        old_actual = player
+        for key in list(boards.keys()):
+            board = boards[key]
+            idx = find_name_index(board, player)
+            if idx == -1:
+                continue
+            old_actual = board[idx]
+            # Rename in place, then drop any *other* occurrence of new_name in
+            # this same board so a rename can never create a duplicate.
+            rebuilt: list[str] = []
+            for i, n in enumerate(board):
+                if i == idx:
+                    rebuilt.append(new_name)
+                elif str(n).strip().lower() == new_key:
+                    continue
+                else:
+                    rebuilt.append(n)
+            boards[key] = rebuilt
+            affected += 1
+        if affected == 0:
+            raise CommandError(f"**{player}** is not ranked in any leaderboard.")
+        return doc, {
+            "commit_message": f"rename: {old_actual} -> {new_name} across {affected} leaderboards",
+            "response": (
+                f"✏️ Renamed **{old_actual}** to **{new_name}** "
+                f"across **{affected}** leaderboard{'s' if affected != 1 else ''}."
+            ),
         }
 
     return mutate
@@ -471,83 +373,73 @@ async def _execute(interaction: discord.Interaction, label: str, builder: Mutati
 # --------------------------------------------------------------------------- #
 # Slash commands — mutating (admin only)
 # --------------------------------------------------------------------------- #
-@bot.tree.command(name="add", description="Add a player to the leaderboard (appended at the bottom).")
+@bot.tree.command(name="setrank", description="Set a player's rank in a region+build+mode ranking.")
 @app_commands.describe(
-    name="Player name",
+    player="Player name",
     region="Region (e.g. NA, EU, ASIA, SA, OCE)",
-    builds="Comma-separated builds (e.g. Gun, Sword)",
-    modes="Comma-separated modes (e.g. 1v1s, 2v2s)",
+    build="Build (e.g. Gun, Sword)",
+    mode="Mode (e.g. 1v1s, 2v2s)",
+    position="Target rank in that ranking (1 = top; beyond the size → end).",
 )
 @is_admin()
-async def add(interaction: discord.Interaction, name: str, region: str, builds: str, modes: str) -> None:
-    await _execute(interaction, "add", lambda: build_add(name, region, builds, modes))
-
-
-@bot.tree.command(name="remove", description="Remove a player from the leaderboard.")
-@app_commands.describe(name="Player name (case-insensitive)")
-@is_admin()
-async def remove(interaction: discord.Interaction, name: str) -> None:
-    await _execute(interaction, "remove", lambda: build_remove(name))
-
-
-@bot.tree.command(name="move", description="Move a player to a specific rank (1 = top).")
-@app_commands.describe(name="Player name (case-insensitive)", position="Target rank (1 or greater)")
-@is_admin()
-async def move(interaction: discord.Interaction, name: str, position: int) -> None:
-    await _execute(interaction, "move", lambda: build_move(name, position))
-
-
-@bot.tree.command(name="rename", description="Rename a player, keeping their rank, region, builds and modes.")
-@app_commands.describe(name="Current player name (case-insensitive)", new_name="New player name")
-@is_admin()
-async def rename(interaction: discord.Interaction, name: str, new_name: str) -> None:
-    await _execute(interaction, "rename", lambda: build_rename(name, new_name))
-
-
-@bot.tree.command(name="addbuild", description="Add a build to an existing player.")
-@app_commands.describe(name="Player name (case-insensitive)", build="Build to add")
-@is_admin()
-async def addbuild(interaction: discord.Interaction, name: str, build: str) -> None:
-    await _execute(interaction, "addbuild", lambda: build_addbuild(name, build))
-
-
-@bot.tree.command(name="removebuild", description="Remove a build from an existing player.")
-@app_commands.describe(name="Player name (case-insensitive)", build="Build to remove")
-@is_admin()
-async def removebuild(interaction: discord.Interaction, name: str, build: str) -> None:
-    await _execute(interaction, "removebuild", lambda: build_removebuild(name, build))
-
-
-@bot.tree.command(name="updateregion", description="Update a player's region.")
-@app_commands.describe(name="Player name (case-insensitive)", region="New region")
-@is_admin()
-async def updateregion(interaction: discord.Interaction, name: str, region: str) -> None:
-    await _execute(interaction, "updateregion", lambda: build_updateregion(name, region))
-
-
-@bot.tree.command(name="editplayer", description="Edit a player's region, builds, and/or modes.")
-@app_commands.describe(
-    name="Player name (case-insensitive)",
-    region="New region (optional)",
-    builds="New comma-separated builds (optional — replaces existing)",
-    modes="New comma-separated modes (optional — replaces existing)",
-)
-@is_admin()
-async def editplayer(
+async def setrank(
     interaction: discord.Interaction,
-    name: str,
-    region: str | None = None,
-    builds: str | None = None,
-    modes: str | None = None,
+    player: str,
+    region: str,
+    build: str,
+    mode: str,
+    position: int,
 ) -> None:
-    await _execute(interaction, "editplayer", lambda: build_editplayer(name, region, builds, modes))
+    await _execute(interaction, "setrank", lambda: build_setrank(player, region, build, mode, position))
+
+
+@bot.tree.command(name="removefrom", description="Remove a player from ONE region+build+mode ranking.")
+@app_commands.describe(
+    player="Player name (case-insensitive)",
+    region="Region (e.g. NA, EU)",
+    build="Build (e.g. Gun, Sword)",
+    mode="Mode (e.g. 1v1s, 2v2s)",
+)
+@is_admin()
+async def removefrom(
+    interaction: discord.Interaction,
+    player: str,
+    region: str,
+    build: str,
+    mode: str,
+) -> None:
+    await _execute(interaction, "removefrom", lambda: build_removefrom(player, region, build, mode))
+
+
+@bot.tree.command(name="remove", description="Remove a player from ALL rankings entirely.")
+@app_commands.describe(player="Player name (case-insensitive)")
+@is_admin()
+async def remove(interaction: discord.Interaction, player: str) -> None:
+    await _execute(interaction, "remove", lambda: build_remove(player))
+
+
+@bot.tree.command(name="rename", description="Rename a player across every ranking they appear in.")
+@app_commands.describe(player="Current player name (case-insensitive)", new_name="New player name")
+@is_admin()
+async def rename(interaction: discord.Interaction, player: str, new_name: str) -> None:
+    await _execute(interaction, "rename", lambda: build_rename(player, new_name))
 
 
 # --------------------------------------------------------------------------- #
 # Slash command — public
 # --------------------------------------------------------------------------- #
-@bot.tree.command(name="list", description="Show the current leaderboard (live from GitHub).")
-async def list_players(interaction: discord.Interaction) -> None:
+@bot.tree.command(name="list", description="Show one region+build+mode ranking (live from GitHub).")
+@app_commands.describe(
+    region="Region (e.g. NA, EU)",
+    build="Build (e.g. Gun, Sword)",
+    mode="Mode (e.g. 1v1s, 2v2s)",
+)
+async def list_players(
+    interaction: discord.Interaction,
+    region: str,
+    build: str,
+    mode: str,
+) -> None:
     user = interaction.user
     logger.info("cmd=list user=%s id=%s status=invoked", user, user.id)
     try:
@@ -556,9 +448,17 @@ async def list_players(interaction: discord.Interaction) -> None:
         logger.error("cmd=list could not defer: %s", exc)
         return
 
+    # Parse/normalize the combo first so a bad input is a friendly ephemeral error.
+    try:
+        region_n, build_n, mode_n, key = normalize_combo(region, build, mode)
+    except CommandError as exc:
+        await _safe_send(interaction, _error_message(exc), ephemeral=True)
+        return
+    label = format_combo(region_n, build_n, mode_n)
+
     assert bot.github is not None
     try:
-        players, _sha = await bot.github.get_players()
+        doc, _sha = await bot.github.get_document()
     except Exception as exc:  # noqa: BLE001
         level = logging.WARNING if isinstance(exc, (GitHubError, ValidationError)) else logging.ERROR
         logger.log(level, "cmd=list user=%s id=%s status=failure error=%s", user, user.id, exc,
@@ -566,28 +466,29 @@ async def list_players(interaction: discord.Interaction) -> None:
         await _safe_send(interaction, _error_message(exc), ephemeral=True)
         return
 
-    if not players:
-        await _safe_send(interaction, "The leaderboard is currently empty. 🏴‍☠️", ephemeral=False)
-        logger.info("cmd=list user=%s id=%s status=success count=0", user, user.id)
+    board = doc.get("leaderboards", {}).get(key) or []
+    if not board:
+        await _safe_send(interaction, f"No ranking exists for **{label}** yet. 🏴‍☠️", ephemeral=False)
+        logger.info("cmd=list user=%s id=%s status=success combo=%s count=0", user, user.id, key)
         return
 
-    lines = [f"#{i + 1} {p['name']}" for i, p in enumerate(players)]
+    lines = [f"#{i + 1} {name}" for i, name in enumerate(board)]
     description = "\n".join(lines)
     if len(description) > 4000:  # embed description hard limit is 4096
         description = description[:3990] + "\n… (truncated)"
 
     embed = discord.Embed(
-        title="🏆 Skill Build — Current Leaderboard",
+        title=f"🏆 {label}",
         description=description,
         color=0xECC97F,
     )
-    embed.set_footer(text=f"{len(players)} player(s) · live from players.json")
+    embed.set_footer(text=f"{len(board)} player(s) · live from players.json")
     try:
         await interaction.followup.send(embed=embed)
     except discord.HTTPException as exc:
         logger.error("cmd=list failed to send embed: %s", exc)
         return
-    logger.info("cmd=list user=%s id=%s status=success count=%d", user, user.id, len(players))
+    logger.info("cmd=list user=%s id=%s status=success combo=%s count=%d", user, user.id, key, len(board))
 
 
 # --------------------------------------------------------------------------- #

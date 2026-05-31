@@ -351,16 +351,17 @@
       <div>
         <span class="eyebrow"><span class="dot"></span> Skill Build · Competitive Tier List</span>
         <h1>The best <span class="grad">skill build</span><br>players alive.</h1>
-        <p class="lede">A global, community-run leaderboard for <b>Blox Fruits</b> skill build —
-        no fruits, just aim, combos and game sense. Ranked by <b>region</b>, <b>build</b> and <b>mode</b>.</p>
+        <p class="lede">A community-run leaderboard for <b>Blox Fruits</b> skill build —
+        no fruits, just aim, combos and game sense. Every <b>region</b>, <b>build</b> and <b>mode</b>
+        has its own <b>independent ranking</b>.</p>
         <div class="credit"><span class="spark">✦</span> Created by <b>danewl</b></div>
       </div>
       <div class="champion" id="champion"></div>
     </section>
 
     <div class="section-head" style="margin-top:58px">
-      <h2>Global Leaderboard</h2>
-      <span class="ctx" id="ctx">Global · Overall</span>
+      <h2>Ranking</h2>
+      <span class="ctx" id="ctx">Select a Region, Build &amp; Mode</span>
     </div>
 
     <div class="filterbar">
@@ -370,7 +371,7 @@
         <div class="fgroup"><span class="label">🎯 Mode</span><div class="chips" id="f-mode"></div></div>
       </div>
       <div class="filter-foot">
-        <span class="filter-count" id="filter-count"><span class="dotc"></span>Showing 0 of 0 players</span>
+        <span class="filter-count" id="filter-count"><span class="dotc"></span>Select all three filters to view a ranking</span>
         <button class="clear-btn" id="clear-filters" type="button">✕ Clear filters</button>
       </div>
     </div>
@@ -378,8 +379,8 @@
     <div class="list" id="list"></div>
 
     <div class="section-head" style="margin-top:64px">
-      <h2>Category Leaders</h2>
-      <span class="ctx">Top 5 · per build &amp; mode</span>
+      <h2>Rankings Overview</h2>
+      <span class="ctx">Every combo · <b>top of each board</b></span>
     </div>
     <div class="cat-grid" id="cat-grid"></div>
   </section>
@@ -431,14 +432,22 @@
 
 <script>
 /* ============================================================
-   PLAYERS DATA  (the "Current" leaderboard)
+   LEADERBOARDS DATA  (the "Current" rankings)
    ------------------------------------------------------------
-   Players now live in players.json (managed via the Discord bot).
-   name / region / builds (["Gun","Sword"]) / modes (["1v1s","2v2s"])
-   RANKING = array order in that file. First = #1.
-   Loaded asynchronously at boot — see loadPlayers()/boot() below.
+   Rankings now live in players.json (managed via the Discord bot)
+   as INDEPENDENT boards keyed by "REGION|Build|mode":
+
+     { "version": 2,
+       "leaderboards": {
+         "NA|Sword|1v1s": ["truck","kriz"],   // array order = rank, #1 first
+         "NA|Sword|2v2s": ["kriz","truck"]
+       } }
+
+   A player can appear in any number of combos at independent ranks.
+   Loaded asynchronously at boot — see loadData()/boot() below.
    ============================================================ */
-let PLAYERS = [];
+let LEADERBOARDS = {};   // { "NA|Sword|1v1s": ["name", ...], ... }
+let COMBOS = [];         // parsed: [{key, region, build, mode, names}]
 
 /* ============================================================
    EDIT YOUR GOATS HERE  (the "GOATS" hall of fame)
@@ -476,8 +485,21 @@ const state={region:"All",build:"All",mode:"All"};
 
 const ini=n=>{const m=n.match(/\d+/);return m?m[0]:n.slice(0,2).toUpperCase();};
 const grad=i=>`linear-gradient(140deg,${AV[i%AV.length]},#0c2240)`;
-const buildPills=p=>p.builds.map(b=>`<span class="pill build">🗡 ${b}</span>`).join("");
-const modePills =p=>p.modes.map(m=>`<span class="pill mode">${m}</span>`).join("");
+const regPill =r=>`<span class="pill reg">${r}</span>`;
+const buildPill=b=>`<span class="pill build">🗡 ${b}</span>`;
+const modePill =m=>`<span class="pill mode">${m}</span>`;
+// pills describing a combo (used on the champion card + every row)
+const comboPills=c=>`${regPill(c.region)}${buildPill(c.build)}${modePill(c.mode)}`;
+// split a "REGION|Build|mode" key into its parts + the live name list
+const parseKey=k=>{const p=String(k).split("|");
+  return{key:k,region:p[0]||"",build:p[1]||"",mode:p[2]||"",names:LEADERBOARDS[k]||[]};};
+// find the actual stored key matching the (case-insensitive) selection, or null
+function findCombo(region,build,mode){
+  for(const c of COMBOS){
+    if(ciEq(c.region,region)&&ciEq(c.build,build)&&ciEq(c.mode,mode))return c;
+  }
+  return null;
+}
 
 /* ---------------- CURRENT view ---------------- */
 // Combined filtering: Region, Build and Mode stack as an intersection. Each
@@ -504,84 +526,114 @@ function makeChips(id,vals,key){
   });
 }
 function render(){
-  const rows=PLAYERS.filter(p=>
-    (state.region==="All"||ciEq(p.region,state.region))&&
-    (state.build==="All"||ciIncludes(p.builds,state.build))&&
-    (state.mode==="All"||ciIncludes(p.modes,state.mode)));
-  const parts=[state.region==="All"?"Global":state.region];
-  if(state.build!=="All")parts.push(state.build);
-  if(state.mode!=="All")parts.push(state.mode);
-  const overall=state.region==="All"&&state.build==="All"&&state.mode==="All";
-  document.getElementById("ctx").innerHTML=parts.map(x=>`<b>${x}</b>`).join(" · ")+(overall?" · Overall":"");
+  const complete=state.region!=="All"&&state.build!=="All"&&state.mode!=="All";
+  const anySel=state.region!=="All"||state.build!=="All"||state.mode!=="All";
+  // The combo only exists once all three are chosen AND a board is stored for it.
+  const combo=complete?findCombo(state.region,state.build,state.mode):null;
+  const names=combo?combo.names:[];
+  const label=complete?`${state.region} · ${state.build} · ${state.mode}`:null;
 
-  // live counter + clear-filters enabled state (update before any early return)
-  const total=PLAYERS.length;
+  // ---- context chip ----
+  const ctxEl=document.getElementById("ctx");
+  if(ctxEl)ctxEl.innerHTML=complete
+    ?`<b>${state.region}</b> · <b>${state.build}</b> · <b>${state.mode}</b>`
+    :"Select a Region, Build &amp; Mode";
+
+  // ---- live counter + clear-filters enabled state (before any early return) ----
   const countEl=document.getElementById("filter-count");
-  if(countEl)countEl.innerHTML=`<span class="dotc"></span>Showing <b>${rows.length}</b> of <b>${total}</b> player${total===1?"":"s"}`;
+  if(countEl){
+    countEl.innerHTML=complete
+      ?`<span class="dotc"></span>Showing <b>${names.length}</b> player${names.length===1?"":"s"} in this ranking`
+      :`<span class="dotc"></span>Select all three filters to view a ranking`;
+  }
   const clearBtn=document.getElementById("clear-filters");
-  if(clearBtn)clearBtn.disabled=overall;
+  if(clearBtn)clearBtn.disabled=!anySel;
 
   const champEl=document.getElementById("champion");
-  if(rows.length){
-    const c=rows[0];
-    champEl.innerHTML=`
-      <div class="inner">
-        <div class="crown">👑 Ranked #1 — ${overall?"Global":parts.join(" · ")}</div>
-        <div class="champ-main">
-          <div class="champ-av" style="background:${grad(0)}"><span class="badge">1</span>${ini(c.name)}</div>
-          <div>
-            <div class="champ-name">${c.name}</div>
-            <div class="champ-sub"><span class="pill reg">${c.region}</span>${buildPills(c)}${modePills(c)}</div>
-          </div>
-        </div>
-      </div>`;
-  } else {
-    champEl.innerHTML=`<div class="inner"><div class="crown">👑 No #1 yet</div>
-      <p style="color:var(--muted);margin-top:14px">No players match these filters yet. 🏴‍☠️</p></div>`;
+  const list=document.getElementById("list");
+  if(list)list.innerHTML="";
+
+  // ---- not all three selected: prompt, no ranking ----
+  if(!complete){
+    if(champEl)champEl.innerHTML=`<div class="inner"><div class="crown">👑 Pick a ranking</div>
+      <p style="color:var(--muted);margin-top:14px;line-height:1.6">Select a <b style="color:var(--text)">Region</b>,
+      <b style="color:var(--text)">Build</b> and <b style="color:var(--text)">Mode</b> above to view its independent ranking. 🏴‍☠️</p></div>`;
+    if(list)list.innerHTML='<div class="empty">Select a <b>Region</b>, <b>Build</b> and <b>Mode</b> to view a ranking.</div>';
+    return;
   }
 
-  const top=rows.slice(0,5);
-  const list=document.getElementById("list");list.innerHTML="";
-  if(!rows.length){ list.innerHTML='<div class="empty">No players match these filters yet. 🏴‍☠️</div>'; return; }
-  top.forEach((p,i)=>{
+  // ---- all three selected but no players (missing/empty board) ----
+  if(!names.length){
+    if(champEl)champEl.innerHTML=`<div class="inner"><div class="crown">👑 No #1 yet</div>
+      <p style="color:var(--muted);margin-top:14px">No ranking exists for <b style="color:var(--text)">${label}</b> yet. 🏴‍☠️</p></div>`;
+    if(list)list.innerHTML=`<div class="empty">No players ranked in <b>${label}</b> yet. 🏴‍☠️</div>`;
+    return;
+  }
+
+  // ---- champion = #1 of this combo ----
+  const c=combo;
+  champEl.innerHTML=`
+    <div class="inner">
+      <div class="crown">👑 Ranked #1 — ${label}</div>
+      <div class="champ-main">
+        <div class="champ-av" style="background:${grad(0)}"><span class="badge">1</span>${ini(names[0])}</div>
+        <div>
+          <div class="champ-name">${names[0]}</div>
+          <div class="champ-sub">${comboPills(c)}</div>
+        </div>
+      </div>
+    </div>`;
+
+  // ---- full ranking (array order = rank) ----
+  names.forEach((nm,i)=>{
     const rank=i+1;const d=document.createElement("div");
     d.className="row"+(rank<=3?` t${rank}`:"");d.style.animationDelay=(i*0.06)+"s";
     const rankMark=MEDALS[rank]?`<span class="medal">${MEDALS[rank]}</span>`:`<span class="hash">#</span><span>${rank}</span>`;
     d.innerHTML=`
       <div class="rank">${rankMark}</div>
-      <div class="avatar" style="background:${grad(rank-1)}">${ini(p.name)}</div>
+      <div class="avatar" style="background:${grad(rank-1)}">${ini(nm)}</div>
       <div class="pinfo">
-        <div class="pname">${p.name} <span class="pill reg">${p.region}</span></div>
-        <div class="tags">${buildPills(p)}${modePills(p)}</div>
+        <div class="pname">${nm} ${regPill(c.region)}</div>
+        <div class="tags">${buildPill(c.build)}${modePill(c.mode)}</div>
       </div>
       <div class="row-rating"><div class="verticon">● Verified</div></div>`;
     list.appendChild(d);
   });
 }
 
-const CATEGORIES=[
-  {title:"Overall",  kind:"Mode · All", ic:"👑", feature:true, test:()=>true},
-  {title:"Gun",      kind:"Build",      ic:"🗡", test:p=>p.builds.includes("Gun")},
-  {title:"Sword",    kind:"Build",      ic:"🗡", test:p=>p.builds.includes("Sword")},
-  {title:"1v1s",     kind:"Mode",       ic:"🎯", test:p=>p.modes.includes("1v1s")},
-  {title:"2v2s",     kind:"Mode",       ic:"🎯", test:p=>p.modes.includes("2v2s")},
-];
-function renderCategories(){
-  const grid=document.getElementById("cat-grid");grid.innerHTML="";
-  CATEGORIES.forEach(cat=>{
-    const topc=PLAYERS.filter(cat.test).slice(0,5);
-    const rows=topc.map((p,i)=>{
+// Overview: one card per POPULATED combo, showing its top 3. Clicking a card
+// jumps the filters straight to that combo's full ranking above.
+function renderOverview(){
+  const grid=document.getElementById("cat-grid");if(!grid)return;grid.innerHTML="";
+  const populated=COMBOS.filter(c=>c.names.length);
+  if(!populated.length){
+    grid.innerHTML='<div class="empty" style="grid-column:1/-1">No rankings yet. 🏴‍☠️</div>';
+    return;
+  }
+  populated.forEach(c=>{
+    const rows=c.names.slice(0,3).map((nm,i)=>{
       const rank=i+1;const mark=MEDALS[rank]?`<span class="m">${MEDALS[rank]}</span>`:`#${rank}`;
       return `<div class="cat-row r${rank}">
         <div class="cat-rank">${mark}</div>
-        <div class="cat-av" style="background:${grad(rank-1)}">${ini(p.name)}</div>
-        <div class="cat-pname">${p.name}</div>
-        <span class="pill reg">${p.region}</span>
-      </div>`;}).join("") || `<div style="color:var(--muted);padding:14px 6px;font-size:13px">No players yet. 🏴‍☠️</div>`;
+        <div class="cat-av" style="background:${grad(rank-1)}">${ini(nm)}</div>
+        <div class="cat-pname">${nm}</div>
+        ${i===0?regPill(c.region):""}
+      </div>`;}).join("");
     const card=document.createElement("div");
-    card.className="cat-card"+(cat.feature?" feature":"");
-    card.innerHTML=`<div class="cat-head"><div class="cat-title"><span class="ic">${cat.ic}</span>${cat.title}</div>
-      <span class="cat-kind">${cat.kind}</span></div>${rows}`;
+    card.className="cat-card";card.style.cursor="pointer";
+    card.setAttribute("role","button");card.setAttribute("tabindex","0");
+    card.setAttribute("aria-label",`View ${c.region} ${c.build} ${c.mode} ranking`);
+    card.innerHTML=`<div class="cat-head">
+        <div class="cat-title"><span class="ic">🗡</span>${c.region} · ${c.build} · ${c.mode}</div>
+        <span class="cat-kind">${c.names.length} ranked</span></div>${rows}`;
+    const jump=()=>{
+      state.region=c.region;state.build=c.build;state.mode=c.mode;
+      syncChips();render();
+      const fb=document.querySelector(".filterbar");
+      if(fb)fb.scrollIntoView({behavior:"smooth",block:"start"});
+    };
+    card.onclick=jump;
+    card.onkeydown=e=>{if(e.key==="Enter"||e.key===" "){e.preventDefault();jump();}};
     grid.appendChild(card);
   });
 }
@@ -700,33 +752,75 @@ if(copyBtn){
 }
 
 /* ---------------- data loading ---------------- */
-// Players now live in players.json (managed by the Discord bot). We load it
-// asynchronously; the ONLY change vs. the old inline array is the data source.
-function isValidPlayer(p){
-  return p && typeof p==="object"
-    && typeof p.name==="string"   && p.name.trim()!==""
-    && typeof p.region==="string" && p.region.trim()!==""
-    && Array.isArray(p.builds) && Array.isArray(p.modes);
+// Rankings live in players.json (managed by the Discord bot) as a v2 document:
+// { version:2, leaderboards:{ "REGION|Build|mode":[names…] } }. We still support
+// the legacy v1 flat array by migrating it client-side, so an old deploy renders.
+
+// Build a v2 leaderboards object from a legacy flat player array. Mirrors the
+// bot's migrate_legacy(): each player joins every region×build×mode combo their
+// tags cover, preserving the array's relative order.
+function migrateLegacy(arr){
+  const out={};
+  const title=s=>s.charAt(0).toUpperCase()+s.slice(1).toLowerCase();
+  arr.forEach(p=>{
+    if(!p||typeof p!=="object")return;
+    const region=String(p.region||"").trim().toUpperCase();
+    const name=String(p.name||"").trim();
+    if(!region||!name)return;
+    (Array.isArray(p.builds)?p.builds:[]).forEach(b=>{
+      const build=String(b||"").trim();if(!build)return;
+      (Array.isArray(p.modes)?p.modes:[]).forEach(m=>{
+        const mode=String(m||"").trim().toLowerCase();if(!mode)return;
+        const key=`${region}|${title(build)}|${mode}`;
+        out[key]=out[key]||[];
+        if(!out[key].some(x=>x.toLowerCase()===name.toLowerCase()))out[key].push(name);
+      });
+    });
+  });
+  return out;
 }
-async function loadPlayers(){
+// Validate + clean a leaderboards object: keep non-empty string keys whose value
+// is an array of non-empty, case-insensitively-unique names. Drops the malformed
+// and any board that ends up empty, so the UI never crashes on bad data.
+function sanitizeLeaderboards(lbs){
+  const out={};
+  if(!lbs||typeof lbs!=="object")return out;
+  for(const [key,names] of Object.entries(lbs)){
+    if(typeof key!=="string"||!key.trim()||!Array.isArray(names))continue;
+    const seen=new Set();const clean=[];
+    for(const n of names){
+      if(typeof n!=="string"||!n.trim())continue;
+      const k=n.trim().toLowerCase();
+      if(seen.has(k))continue;
+      seen.add(k);clean.push(n);
+    }
+    if(clean.length)out[key]=clean;
+  }
+  return out;
+}
+async function loadData(){
   try{
     const res=await fetch("players.json",{cache:"no-cache"});
     if(!res.ok) throw new Error("HTTP "+res.status+" "+res.statusText);
     const data=await res.json();                 // throws on malformed JSON
-    if(!Array.isArray(data)) throw new Error("players.json root is not an array");
-    return data.filter(isValidPlayer);            // drop malformed entries, preserve order
+    let lbs;
+    if(Array.isArray(data)) lbs=migrateLegacy(data);                  // legacy v1 array
+    else if(data&&typeof data==="object") lbs=data.leaderboards||{};  // v2 document
+    else throw new Error("players.json root is neither an array nor an object");
+    return sanitizeLeaderboards(lbs);
   }catch(err){
     console.error("[leaderboard] Could not load players.json:",err);
-    return [];                                    // graceful empty state — page never crashes
+    return {};                                    // graceful empty state — page never crashes
   }
 }
 
 /* ---------------- boot ---------------- */
 async function boot(){
-  PLAYERS=await loadPlayers();
-  REGIONS=["All",...uniqCI(PLAYERS.map(p=>p.region))];
-  BUILDS =["All",...uniqCI(PLAYERS.flatMap(p=>p.builds))];
-  MODES  =["All",...uniqCI(PLAYERS.flatMap(p=>p.modes))];
+  LEADERBOARDS=await loadData();
+  COMBOS=Object.keys(LEADERBOARDS).map(parseKey);
+  REGIONS=["All",...uniqCI(COMBOS.map(c=>c.region))];
+  BUILDS =["All",...uniqCI(COMBOS.map(c=>c.build))];
+  MODES  =["All",...uniqCI(COMBOS.map(c=>c.mode))];
   makeChips("f-region",REGIONS,"region");
   makeChips("f-build",BUILDS,"build");
   makeChips("f-mode",MODES,"mode");
@@ -737,7 +831,7 @@ async function boot(){
   };
   syncChips();
   render();
-  renderCategories();
+  renderOverview();
   renderGoats();
   setView(VIEWS.includes(location.hash.slice(1))?location.hash.slice(1):'current');
 }

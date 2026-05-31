@@ -1,13 +1,31 @@
 # Skill Build Leaderboard — Discord Bot
 
 A production-ready Discord bot that manages the **Blox Fruits skill-build
-leaderboard** by editing `players.json` in this repository through the GitHub
+leaderboards** by editing `players.json` in this repository through the GitHub
 Contents API. Every change is a real commit, which automatically triggers a
 **Cloudflare Pages** redeploy of the website — no manual file editing required.
 
-* **Website data source:** `players.json` (array order = ranking, top = #1)
+* **Website data source:** `players.json` — a v2 document of **independent
+  rankings**, one per `REGION|Build|mode` combo (array order = rank, top = #1).
+  A player can appear in any number of combos at independent positions.
 * **Bot:** Python 3.12, `discord.py` 2.x, `aiohttp`, `python-dotenv`
 * **Commands:** slash commands only
+
+### Data model (`players.json`)
+
+```json
+{
+  "version": 2,
+  "leaderboards": {
+    "NA|Sword|1v1s": ["truck", "kriz"],
+    "NA|Sword|2v2s": ["kriz", "truck"]
+  }
+}
+```
+
+Combo keys are normalized: **region UPPERCASE**, **build Title Case**,
+**mode lowercase**. A legacy v1 file (a flat player array) is migrated to this
+shape automatically the first time the bot reads it.
 
 ---
 
@@ -38,16 +56,16 @@ Contents API. Every change is a real commit, which automatically triggers a
 ## How it works
 
 ```
-Admin runs /add … in Discord
+Admin runs /setrank … in Discord
         │
         ▼
-   bot.py validates input
+   bot.py validates input + normalizes the combo key
         │
         ▼
 github_client.commit_change:
    1. GET  players.json   → decode Base64 + JSON, capture SHA
-   2. apply the mutation (add/remove/move/…)
-   3. validate the resulting array  (rollback protection)
+   2. apply the mutation (setrank/removefrom/remove/rename)
+   3. validate the resulting document  (rollback protection)
    4. PUT  players.json   → Base64 + pretty JSON + SHA
    5. on SHA conflict → re-fetch & retry once
         │
@@ -312,7 +330,7 @@ The bot maps these to friendly Discord replies; here's what they mean:
 
 `players.json` is always written **pretty-printed (2-space indent), with Unicode
 preserved and no minification**, and is validated before every commit — a change
-that would produce an invalid array is **aborted** and never pushed.
+that would produce an invalid document is **aborted** and never pushed.
 
 ---
 
@@ -332,22 +350,20 @@ that would produce an invalid array is **aborted** and never pushed.
 
 Everyone:
 
-| Command | Description |
-| ------- | ----------- |
-| `/list` | Show the current leaderboard, live from GitHub. |
+| Command | Parameters | Description |
+| ------- | ---------- | ----------- |
+| `/list` | `region`, `build`, `mode` | Show one combo's ranking, live from GitHub. If the combo is empty/missing, says so. |
 
 Admin only (require `ADMIN_ROLE_ID` or Guild Administrator):
 
-| Command        | Parameters                                              | Effect |
-| -------------- | ------------------------------------------------------- | ------ |
-| `/add`         | `name`, `region`, `builds`, `modes`                     | Append a player at the bottom. `builds`/`modes` are comma-separated. |
-| `/remove`      | `name`                                                  | Remove a player (case-insensitive). |
-| `/move`        | `name`, `position`                                      | Move a player to a rank (1 = top; beyond the list size → end). |
-| `/rename`      | `name`, `new_name`                                      | Rename a player, keeping rank/region/builds/modes (no duplicate names). |
-| `/addbuild`    | `name`, `build`                                         | Add a build to a player (no case-insensitive duplicates). |
-| `/removebuild` | `name`, `build`                                         | Remove a build from a player. |
-| `/updateregion`| `name`, `region`                                        | Change a player's region. |
-| `/editplayer`  | `name`, `region?`, `builds?`, `modes?`                  | Edit any of region/builds/modes (provide at least one). |
+| Command        | Parameters                                       | Effect |
+| -------------- | ------------------------------------------------ | ------ |
+| `/setrank`     | `player`, `region`, `build`, `mode`, `position`  | Set the player's rank in that combo. Creates the combo if needed; if the player is already in it, moves them to `position`; otherwise inserts at `position` (1 = top; beyond the size → end). Confirms with the combo's new order. |
+| `/removefrom`  | `player`, `region`, `build`, `mode`              | Remove the player from **just that one** combo. Empties out a board that becomes empty. |
+| `/remove`      | `player`                                         | Remove the player from **every** combo entirely. |
+| `/rename`      | `player`, `new_name`                             | Rename the player across all combos (de-dupes within any board that would collide). |
 
-All inputs are trimmed; comma-separated values become arrays with case-insensitive
-de-duplication. Player matching is case-insensitive throughout.
+Combo keys are normalized on every command: **region UPPERCASE**, **build Title
+Case**, **mode lowercase** — so `na`/`NA` and `sword`/`Sword` always resolve to
+the same ranking. Player matching is case-insensitive throughout, and a player's
+stored name casing is preserved when you move or re-rank them.

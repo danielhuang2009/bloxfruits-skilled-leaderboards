@@ -1,66 +1,27 @@
-[
-  {
-    "name": "Kriz",
-    "region": "NA",
-    "builds": [
-      "Gun"
+{
+  "version": 2,
+  "leaderboards": {
+    "NA|Gun|1v1s": [
+      "Kriz"
     ],
-    "modes": [
-      "1v1s",
-      "2v2s"
-    ]
-  },
-  {
-    "name": "chicken/tavuk",
-    "region": "EU",
-    "builds": [
-      "Gun"
+    "NA|Gun|2v2s": [
+      "Kriz"
     ],
-    "modes": [
-      "1v1s",
-      "2v2s"
-    ]
-  },
-  {
-    "name": "Symbolic",
-    "region": "EU",
-    "builds": [
-      "Gun"
+    "EU|Gun|1v1s": [
+      "chicken/tavuk",
+      "Symbolic"
     ],
-    "modes": [
-      "1v1s"
-    ]
-  },
-  {
-    "name": "Lizard",
-    "region": "NA",
-    "builds": [
-      "Sword"
+    "EU|Gun|2v2s": [
+      "chicken/tavuk"
     ],
-    "modes": [
-      "1v1s",
-      "2v2s"
-    ]
-  },
-  {
-    "name": "Robs",
-    "region": "NA",
-    "builds": [
-      "Sword"
+    "NA|Sword|1v1s": [
+      "Lizard",
+      "Robs",
+      "Truck"
     ],
-    "modes": [
-      "1v1s"
-    ]
-  },
-  {
-    "name": "Truck",
-    "region": "NA",
-    "builds": [
-      "Sword"
-    ],
-    "modes": [
-      "1v1s",
-      "2v2s"
+    "NA|Sword|2v2s": [
+      "Lizard",
+      "Truck"
     ]
   }
-]
+}
