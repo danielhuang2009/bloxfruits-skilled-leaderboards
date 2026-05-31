@@ -80,6 +80,38 @@ def find_player_index(players: list[dict[str, Any]], name: str) -> int:
     return -1
 
 
+def _dedupe_ci(items: list[str]) -> list[str]:
+    """Drop empty/case-insensitively-duplicate strings, keeping first-seen order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        s = str(item).strip()
+        if not s:
+            continue
+        key = s.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s)
+    return out
+
+
+def normalize_player(player: dict[str, Any]) -> dict[str, Any]:
+    """Normalize a player's casing in place so filter values stay consistent.
+
+    * region -> UPPERCASE   (``na`` -> ``NA``)
+    * builds -> Title Case   (``sword`` -> ``Sword``)
+    * modes  -> lowercase    (``2V2S`` -> ``2v2s``)
+
+    builds/modes are also de-duplicated case-insensitively. The player's name,
+    rank (array position) and the set of values are otherwise preserved.
+    """
+    player["region"] = str(player.get("region", "")).strip().upper()
+    player["builds"] = _dedupe_ci([str(b).strip().title() for b in player.get("builds", [])])
+    player["modes"] = _dedupe_ci([str(m).strip().lower() for m in player.get("modes", [])])
+    return player
+
+
 # --------------------------------------------------------------------------- #
 # Mutation builders — each returns a pure function (players -> (new, info)).
 # They raise CommandError for domain problems; commit_change re-fetches and
@@ -102,7 +134,7 @@ def build_add(name: str, region: str, builds_raw: str, modes_raw: str) -> Callab
     def mutate(players: list[dict[str, Any]]):
         if find_player_index(players, name) != -1:
             raise CommandError(f"A player named **{name}** already exists.")
-        players.append({"name": name, "region": region, "builds": builds, "modes": modes})
+        players.append(normalize_player({"name": name, "region": region, "builds": builds, "modes": modes}))
         rank = len(players)
         return players, {
             "commit_message": f"Add player: {name}",
@@ -172,6 +204,7 @@ def build_addbuild(name: str, build: str) -> Callable:
         if any(str(b).strip().lower() == build.lower() for b in builds):
             raise CommandError(f"**{actual}** already has the build **{build}**.")
         builds.append(build)
+        normalize_player(players[idx])
         return players, {
             "commit_message": f"Add build: {actual}",
             "response": f"✅ Added build **{build}** to **{actual}**",
@@ -220,9 +253,10 @@ def build_updateregion(name: str, region: str) -> Callable:
             raise CommandError(f"No player named **{name}** was found.")
         actual = players[idx]["name"]
         players[idx]["region"] = region
+        normalize_player(players[idx])
         return players, {
             "commit_message": f"Update region: {actual}",
-            "response": f"🌍 Updated region for **{actual}** to **{region}**",
+            "response": f"🌍 Updated region for **{actual}** to **{players[idx]['region']}**",
         }
 
     return mutate
@@ -251,6 +285,8 @@ def build_rename(name: str, new_name: str) -> Callable:
         # Change only the name; rank (array position), region, builds and modes
         # are left untouched.
         players[idx]["name"] = new_name
+        # Renaming also re-normalizes the player's other fields as a safety net.
+        normalize_player(players[idx])
         return players, {
             "commit_message": f"Rename player: {old} to {new_name}",
             "response": f"✏️ Renamed **{old}** to **{new_name}**",
@@ -299,6 +335,7 @@ def build_editplayer(
         if new_modes is not None:
             players[idx]["modes"] = new_modes
             changed.append("modes")
+        normalize_player(players[idx])
         return players, {
             "commit_message": f"Edit player: {actual}",
             "response": f"✏️ Updated {', '.join(changed)} for **{actual}**",

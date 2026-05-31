@@ -449,6 +449,13 @@ const GOATS = [
 const AV=["#3b7fe0","#e0566c","#d6ad52","#41e0c2","#9568f8","#1eb3c8","#ff8a4d","#5a86e0","#cc6299","#48a878"];
 const MEDALS={1:"🥇",2:"🥈",3:"🥉"};
 const uniq=a=>[...new Set(a)];
+// Case-insensitive de-dupe for the main-leaderboard filter chips: keeps the
+// first-seen casing, so messy data (e.g. "na" vs "NA") can never create a
+// duplicate chip. ciEq/ciIncludes back the matching below. (GOATS has no
+// filters and is intentionally left untouched.)
+const uniqCI=a=>{const seen=new Set();const out=[];for(const v of a){const k=String(v).toLowerCase();if(!seen.has(k)){seen.add(k);out.push(v);}}return out;};
+const ciEq=(a,b)=>String(a).toLowerCase()===String(b).toLowerCase();
+const ciIncludes=(arr,v)=>Array.isArray(arr)&&arr.some(x=>ciEq(x,v));
 let REGIONS=["All"];
 let BUILDS =["All"];
 let MODES  =["All"];
@@ -485,9 +492,9 @@ function makeChips(id,vals,key){
 }
 function render(){
   const rows=PLAYERS.filter(p=>
-    (state.region==="All"||p.region===state.region)&&
-    (state.build==="All"||p.builds.includes(state.build))&&
-    (state.mode==="All"||p.modes.includes(state.mode)));
+    (state.region==="All"||ciEq(p.region,state.region))&&
+    (state.build==="All"||ciIncludes(p.builds,state.build))&&
+    (state.mode==="All"||ciIncludes(p.modes,state.mode)));
   const parts=[state.region==="All"?"Global":state.region];
   if(state.build!=="All")parts.push(state.build);
   if(state.mode!=="All")parts.push(state.mode);
@@ -697,9 +704,9 @@ async function loadPlayers(){
 /* ---------------- boot ---------------- */
 async function boot(){
   PLAYERS=await loadPlayers();
-  REGIONS=["All",...uniq(PLAYERS.map(p=>p.region))];
-  BUILDS =["All",...uniq(PLAYERS.flatMap(p=>p.builds))];
-  MODES  =["All",...uniq(PLAYERS.flatMap(p=>p.modes))];
+  REGIONS=["All",...uniqCI(PLAYERS.map(p=>p.region))];
+  BUILDS =["All",...uniqCI(PLAYERS.flatMap(p=>p.builds))];
+  MODES  =["All",...uniqCI(PLAYERS.flatMap(p=>p.modes))];
   makeChips("f-region",REGIONS,"region");
   makeChips("f-build",BUILDS,"build");
   makeChips("f-mode",MODES,"mode");

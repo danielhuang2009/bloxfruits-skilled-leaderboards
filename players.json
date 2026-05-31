@@ -268,9 +268,9 @@
   },
   {
     "name": "testguy",
-    "region": "na",
+    "region": "NA",
     "builds": [
-      "gun"
+      "Gun"
     ],
     "modes": [
       "1v1"
@@ -278,9 +278,9 @@
   },
   {
     "name": "truck",
-    "region": "na",
+    "region": "NA",
     "builds": [
-      "sword"
+      "Sword"
     ],
     "modes": [
       "2v2s"
