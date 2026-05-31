@@ -1,1 +1,13 @@
-[]
+[
+  {
+    "name": "chicken/tavuk",
+    "region": "NA",
+    "builds": [
+      "Gun"
+    ],
+    "modes": [
+      "1v1s",
+      "2v2s"
+    ]
+  }
+]
